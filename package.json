@@ -1,6 +1,3 @@
-// --- package.json ---
-// Project dependencies
-
 {
   "name": "select-start-api",
   "version": "1.0.0",
