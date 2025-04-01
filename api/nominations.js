@@ -1,8 +1,8 @@
 // --- api/nominations.js ---
 // This endpoint fetches the current month's game nominations
 
-import { connectToDatabase } from '../lib/database';
-import { User } from '../lib/models';
+import { connectToDatabase } from '../lib/database.js';
+import { User } from '../lib/models.js';
 
 export default async function handler(req, res) {
   // Set CORS headers to allow your Carrd site to access this API
