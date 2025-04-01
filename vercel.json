@@ -1,6 +1,3 @@
-// --- vercel.json ---
-// Vercel configuration
-
 {
   "version": 2,
   "builds": [
@@ -12,7 +9,7 @@
   "routes": [
     {
       "src": "/api/(.*)",
-      "dest": "/api/$1"
+      "dest": "/api/$1.js"
     }
   ]
 }
