@@ -1,4 +1,4 @@
-// api/nominations.js - Updated with better error handling and empty data handling
+// api/nominations.js - Updated to properly format data for Carrd
 
 import { connectToDatabase } from '../lib/database.js';
 import { User } from '../lib/models.js';
@@ -19,6 +19,8 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  console.log('Nominations API called');
+
   try {
     console.log('Connecting to database...');
     // Connect to MongoDB
@@ -29,6 +31,10 @@ export default async function handler(req, res) {
     console.log('Fetching users...');
     const users = await User.find({});
     console.log(`Found ${users.length} users`);
+
+    // Check if format=carrd is specified
+    const formatForCarrd = req.query.format === 'carrd';
+    console.log(`Format for Carrd: ${formatForCarrd}`);
 
     // Get all current nominations
     let allNominations = [];
@@ -44,10 +50,14 @@ export default async function handler(req, res) {
       const nominations = getCurrentNominations(user);
       console.log(`User ${user.raUsername} has ${nominations.length} current nominations`);
       
+      // Map nominations to include username
       if (nominations.length > 0) {
         allNominations.push(...nominations.map(nom => ({
           gameId: nom.gameId,
-          nominatedBy: user.raUsername,
+          gameTitle: nom.gameTitle || nom.gameId, // Use title if available
+          consoleName: nom.consoleName || "Unknown Console",
+          discordUsername: user.raUsername,
+          discordId: user.discordId,
           nominatedAt: nom.nominatedAt
         })));
       }
@@ -55,67 +65,73 @@ export default async function handler(req, res) {
 
     console.log(`Total nominations found: ${allNominations.length}`);
     
-    // Always return a valid response even if no nominations
-    if (allNominations.length === 0) {
-      console.log('No nominations found, returning empty array');
+    if (formatForCarrd) {
+      // Format for Carrd site
+      // Group nominations by game to count them and collect nominators
+      const gameGroups = {};
+      allNominations.forEach(nom => {
+        const gameKey = nom.gameTitle || nom.gameId;
+        if (!gameGroups[gameKey]) {
+          gameGroups[gameKey] = {
+            title: gameKey,
+            gameId: nom.gameId,
+            platform: nom.consoleName,
+            nominatedBy: [],
+            count: 0
+          };
+        }
+        
+        if (!gameGroups[gameKey].nominatedBy.includes(nom.discordUsername)) {
+          gameGroups[gameKey].nominatedBy.push(nom.discordUsername);
+          gameGroups[gameKey].count++;
+        }
+      });
+      
+      // Transform to Carrd format
+      const formattedNominations = Object.values(gameGroups).map(group => ({
+        title: group.title,
+        gameId: group.gameId,
+        achievementCount: 42, // Placeholder value
+        imageUrl: "https://media.retroachievements.org/Images/061127.png", // Placeholder image
+        nominationCount: group.count,
+        nominatedBy: group.nominatedBy
+      }));
+      
+      // Sort by nomination count (highest first)
+      formattedNominations.sort((a, b) => b.nominationCount - a.nominationCount);
+      
+      return res.status(200).json({
+        totalNominations: allNominations.length,
+        uniqueGames: formattedNominations.length,
+        nominations: formattedNominations,
+        lastUpdated: new Date().toISOString()
+      });
+    } else {
+      // Original format for other clients
+      return res.status(200).json({
+        nominations: allNominations,
+        isOpen: true,
+        lastUpdated: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    console.error('Error fetching nominations:', error);
+    
+    // Return a valid response even on error
+    if (req.query.format === 'carrd') {
       return res.status(200).json({ 
         totalNominations: 0, 
         uniqueGames: 0, 
-        nominations: [] 
+        nominations: [],
+        lastUpdated: new Date().toISOString()
+      });
+    } else {
+      return res.status(200).json({
+        nominations: [],
+        isOpen: true,
+        lastUpdated: new Date().toISOString()
       });
     }
-
-    // Count nominations per game
-    const nominationCounts = {};
-    allNominations.forEach(nom => {
-      if (!nominationCounts[nom.gameId]) {
-        nominationCounts[nom.gameId] = {
-          count: 0,
-          nominatedBy: []
-        };
-      }
-      nominationCounts[nom.gameId].count++;
-      nominationCounts[nom.gameId].nominatedBy.push(nom.nominatedBy);
-    });
-
-    // Get unique game IDs
-    const uniqueGameIds = [...new Set(allNominations.map(nom => nom.gameId))];
-    console.log(`Unique games: ${uniqueGameIds.length}`);
-
-    // Format the response
-    // In a real implementation, you would fetch game details from RetroAchievements API
-    // For this demo, we'll use placeholder data
-    const formattedNominations = uniqueGameIds.map(gameId => {
-      return {
-        title: gameId, // Using game ID as title for now
-        gameId,
-        achievementCount: 30 + Math.floor(Math.random() * 30), // Random count for demo
-        imageUrl: "https://media.retroachievements.org/Images/061127.png", // Default image
-        nominationCount: nominationCounts[gameId].count,
-        nominatedBy: nominationCounts[gameId].nominatedBy
-      };
-    });
-
-    // Sort by nomination count (descending)
-    formattedNominations.sort((a, b) => b.nominationCount - a.nominationCount);
-
-    const response = {
-      totalNominations: allNominations.length,
-      uniqueGames: uniqueGameIds.length,
-      nominations: formattedNominations
-    };
-    
-    console.log('Successfully returning nominations data');
-    return res.status(200).json(response);
-  } catch (error) {
-    console.error('Error fetching nominations:', error);
-    // Return a valid response even on error
-    return res.status(200).json({ 
-      error: 'Error processing nominations',
-      totalNominations: 0, 
-      uniqueGames: 0, 
-      nominations: [] 
-    });
   }
 }
 
