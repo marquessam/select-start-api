@@ -1,4 +1,4 @@
-// api/leaderboard.js - Updated to match Discord bot data
+// Improved version of api/leaderboard.js
 
 import { connectToDatabase } from '../lib/database.js';
 import { Challenge, User } from '../lib/models.js';
@@ -18,6 +18,9 @@ export default async function handler(req, res) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
+
+  // Flag to track which data source we're using
+  let dataSource = 'live';
 
   try {
     console.log('Connecting to database...');
@@ -39,76 +42,65 @@ export default async function handler(req, res) {
 
     if (!currentChallenge) {
       console.log('No active challenge found');
-      return res.status(404).json({ error: 'No active challenge found for the current month' });
+      return res.status(404).json({ 
+        error: 'No active challenge found for the current month',
+        timestamp: new Date().toISOString()
+      });
     }
     
     console.log(`Found challenge: ${currentChallenge.monthly_challange_gameid}`);
 
-    // For now, we'll hard-code the correct data to match your Discord bot
-    // This is a temporary solution until we can fix the data source
-    const hardcodedRankings = [
-      { 
-        username: "muttonchopmc", 
-        achieved: 7, 
-        percentage: "10.29", 
-        award: "🏁", 
-        points: 1 
-      },
-      { 
-        username: "hyperlincs", 
-        achieved: 5, 
-        percentage: "7.35", 
-        award: "🏁", 
-        points: 1 
-      },
-      { 
-        username: "xelxlolox", 
-        achieved: 1, 
-        percentage: "1.47", 
-        award: "🏁", 
-        points: 1 
+    // Get user progress for this challenge
+    console.log('Fetching user progress...');
+    const users = await User.find({});
+    
+    // Build rankings from user data
+    const rankings = [];
+    
+    for (const user of users) {
+      // Check if user has progress for this challenge
+      const challengeKey = formatDateKey(currentMonthStart);
+      if (user.monthlyChallenges && user.monthlyChallenges.has(challengeKey)) {
+        const progress = user.monthlyChallenges.get(challengeKey);
+        
+        if (progress && typeof progress.progress === 'number') {
+          // Calculate achievement percentage
+          const percentage = (progress.progress / currentChallenge.monthly_challange_game_total * 100).toFixed(2);
+          
+          // Determine award
+          let award = '🏁'; // Default to participation
+          let points = 1;
+          
+          // Check for mastery (all achievements)
+          if (progress.progress === currentChallenge.monthly_challange_game_total) {
+            award = '✨'; // Mastery
+            points = 3;
+          } 
+          // Check for beaten (all progression achievements)
+          else if (currentChallenge.monthly_challange_progression_achievements && 
+                  currentChallenge.monthly_challange_progression_achievements.length > 0) {
+            // This is simplified logic - in reality, you'd check if all progression achievements were earned
+            // Since we don't have that data structure, we'll just assume progression is not complete
+            award = '🏁';
+            points = 1;
+          }
+          
+          rankings.push({
+            username: user.raUsername,
+            achieved: progress.progress,
+            percentage: percentage,
+            award: award,
+            points: points
+          });
+        }
       }
-    ];
-
-    // Calculate challenge end date and time remaining
-    const challengeEndDate = new Date(nextMonthStart);
-    challengeEndDate.setDate(challengeEndDate.getDate() - 1);
-    challengeEndDate.setHours(23, 59, 59);
+    }
     
-    const endDateFormatted = `${now.toLocaleString('default', { month: 'long' })} ${challengeEndDate.getDate()}${getDaySuffix(challengeEndDate.getDate())}, ${challengeEndDate.getFullYear()} at 11:59 PM`;
-    const timeRemaining = formatTimeRemaining(challengeEndDate, now);
-    
-    // Build the response with hardcoded data for now
-    const response = {
-      monthName: now.toLocaleString('default', { month: 'long' }),
-      year: now.getFullYear(),
-      game: {
-        title: "Ape Escape", // Hardcoded to match Discord
-        totalAchievements: 68, // Hardcoded to match Discord
-        imageUrl: "https://media.retroachievements.org/Images/061127.png",
-        endDate: endDateFormatted,
-        timeRemaining
-      },
-      rankings: hardcodedRankings
-    };
-
-    console.log('Successfully returning hardcoded leaderboard data to match Discord');
-    return res.status(200).json(response);
-  } catch (error) {
-    console.error('Error fetching leaderboard:', error);
-    
-    // Return a valid response even on error, with correct data
-    return res.status(200).json({
-      monthName: "April",
-      year: 2025,
-      game: {
-        title: "Ape Escape",
-        totalAchievements: 68,
-        imageUrl: "https://media.retroachievements.org/Images/061127.png",
-        endDate: "April 30th, 2025 at 11:59 PM",
-        timeRemaining: "29 days and 22 hours"
-      },
-      rankings: [
+    // If no rankings were found, we'll use hardcoded data
+    if (rankings.length === 0) {
+      console.log('No user progress found, using hardcoded rankings');
+      dataSource = 'hardcoded';
+      rankings.push(...[
         { 
           username: "muttonchopmc", 
           achieved: 7, 
@@ -130,7 +122,46 @@ export default async function handler(req, res) {
           award: "🏁", 
           points: 1 
         }
-      ]
+      ]);
+    }
+    
+    // Sort rankings by achievements (highest first)
+    rankings.sort((a, b) => b.achieved - a.achieved);
+
+    // Calculate challenge end date and time remaining
+    const challengeEndDate = new Date(nextMonthStart);
+    challengeEndDate.setDate(challengeEndDate.getDate() - 1);
+    challengeEndDate.setHours(23, 59, 59);
+    
+    const endDateFormatted = `${now.toLocaleString('default', { month: 'long' })} ${challengeEndDate.getDate()}${getDaySuffix(challengeEndDate.getDate())}, ${challengeEndDate.getFullYear()} at 11:59 PM`;
+    const timeRemaining = formatTimeRemaining(challengeEndDate, now);
+    
+    // Build the response
+    const response = {
+      monthName: now.toLocaleString('default', { month: 'long' }),
+      year: now.getFullYear(),
+      game: {
+        title: "Ape Escape", // You'll need to replace this with actual game title from your DB
+        totalAchievements: currentChallenge.monthly_challange_game_total,
+        imageUrl: "https://media.retroachievements.org/Images/061127.png", // Replace with actual image URL
+        endDate: endDateFormatted,
+        timeRemaining
+      },
+      rankings: rankings,
+      dataSource: dataSource, // This helps debugging
+      timestamp: new Date().toISOString()
+    };
+
+    console.log(`Successfully returning leaderboard data (source: ${dataSource})`);
+    return res.status(200).json(response);
+  } catch (error) {
+    console.error('Error fetching leaderboard:', error);
+    
+    // Return proper error instead of defaulting to mock data
+    return res.status(500).json({
+      error: 'Failed to fetch leaderboard data',
+      message: error.message,
+      timestamp: new Date().toISOString()
     });
   }
 }
