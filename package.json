@@ -1,0 +1,26 @@
+{
+  "name": "retroachievements-api",
+  "version": "1.0.0",
+  "description": "API server for RetroAchievements leaderboard and nominations",
+  "type": "module",
+  "main": "standalone-api.js",
+  "scripts": {
+    "start": "node standalone-api.js",
+    "dev": "nodemon standalone-api.js"
+  },
+  "keywords": [
+    "api",
+    "retroachievements",
+    "gaming"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "mongoose": "^8.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
