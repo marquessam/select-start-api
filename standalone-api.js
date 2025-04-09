@@ -207,6 +207,18 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
                 error: 'No current challenge found'
             });
         }
+
+        // Get game info for icon URL and other metadata
+        let gameInfo = null;
+        try {
+            // Import the retroAPI service - adapt this based on your setup
+            // This is just a placeholder - modify to match your actual retroAPI import
+            const retroAPI = (await import('./services/retroAPI.js')).default;
+            gameInfo = await retroAPI.getGameInfo(currentChallenge.monthly_challange_gameid);
+        } catch (error) {
+            console.error('Error fetching game info:', error);
+            // Continue even if game info fetch fails
+        }
         
         // Get all users
         const users = await User.find({});
@@ -225,24 +237,55 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
                 shadowPoints = user.shadowChallenges.get(monthKey)?.progress || 0;
             }
             
+            const totalPoints = monthlyPoints + shadowPoints;
+            
+            // Calculate percentage completion
+            const totalAchievements = currentChallenge.monthly_challange_game_total || 0;
+            const percentage = totalAchievements > 0 
+                ? Math.round((totalPoints / 3) * 100) // Rough percentage based on points (0-3)
+                : 0;
+            
             return {
                 username: user.raUsername,
                 discordId: user.discordId,
                 monthlyPoints,
                 shadowPoints,
-                totalPoints: monthlyPoints + shadowPoints
+                totalPoints,
+                percentage,
+                achieved: Math.floor(totalPoints * totalAchievements / 3), // Estimate achievements based on points
+                total: totalAchievements
             };
         });
         
+        // Filter out users with no progress
+        const filteredLeaderboard = leaderboard.filter(entry => entry.totalPoints > 0);
+        
         // Sort by total points
-        leaderboard.sort((a, b) => b.totalPoints - a.totalPoints);
+        filteredLeaderboard.sort((a, b) => b.totalPoints - a.totalPoints);
+        
+        // Calculate challenge end date and time remaining
+        const challengeEndDate = new Date(nextMonthStart);
+        challengeEndDate.setDate(challengeEndDate.getDate() - 1); // Last day of current month
+        challengeEndDate.setHours(23, 59, 59);  // Set to 11:59 PM
+        
+        // Format the end date
+        const monthName = now.toLocaleString('default', { month: 'long' });
+        const endDateFormatted = `${monthName} ${challengeEndDate.getDate()}${getDaySuffix(challengeEndDate.getDate())}, ${challengeEndDate.getFullYear()} at 11:59 PM`;
+        
+        // Calculate time remaining
+        const timeRemaining = formatTimeRemaining(challengeEndDate, now);
         
         // Prepare response
         const data = {
-            leaderboard,
+            leaderboard: filteredLeaderboard,
             challenge: {
                 monthYear: new Date(currentChallenge.date).toLocaleString('default', { month: 'long', year: 'numeric' }),
                 monthlyGame: currentChallenge.monthly_challange_gameid,
+                gameTitle: gameInfo?.title || 'Unknown Game',
+                gameIconUrl: gameInfo?.imageIcon ? `https://retroachievements.org${gameInfo.imageIcon}` : null,
+                totalAchievements: currentChallenge.monthly_challange_game_total,
+                endDate: endDateFormatted,
+                timeRemaining: timeRemaining,
                 shadowGame: currentChallenge.shadow_challange_revealed ? currentChallenge.shadow_challange_gameid : null,
                 shadowRevealed: currentChallenge.shadow_challange_revealed
             },
@@ -478,6 +521,32 @@ app.post('/api/admin/force-update', adminApiKeyAuth, async (req, res) => {
         });
     }
 });
+
+// Helper function to get day suffix (st, nd, rd, th)
+function getDaySuffix(day) {
+    if (day > 3 && day < 21) return 'th';
+    switch (day % 10) {
+        case 1: return 'st';
+        case 2: return 'nd';
+        case 3: return 'rd';
+        default: return 'th';
+    }
+}
+
+// Helper function to format time remaining
+function formatTimeRemaining(end, now) {
+    const diffMs = end - now;
+    if (diffMs <= 0) return 'Challenge has ended';
+    
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const diffHrs = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    
+    if (diffDays === 0) {
+        return `${diffHrs} hour${diffHrs !== 1 ? 's' : ''}`;
+    } else {
+        return `${diffDays} day${diffDays !== 1 ? 's' : ''} and ${diffHrs} hour${diffHrs !== 1 ? 's' : ''}`;
+    }
+}
 
 // Start the server
 app.listen(port, () => {
