@@ -181,7 +181,7 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// Monthly leaderboard
+// Monthly leaderboard endpoint in standalone-api.js
 app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
     try {
         // Check if we have fresh cache
@@ -212,7 +212,6 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
         let gameInfo = null;
         try {
             // Import the retroAPI service - adapt this based on your setup
-            // This is just a placeholder - modify to match your actual retroAPI import
             const retroAPI = (await import('./services/retroAPI.js')).default;
             gameInfo = await retroAPI.getGameInfo(currentChallenge.monthly_challange_gameid);
         } catch (error) {
@@ -226,24 +225,34 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
         // Get the month key
         const monthKey = User.formatDateKey(currentChallenge.date);
         
-        // Build leaderboard
+        // Build leaderboard with enhanced data
         const leaderboard = users.map(user => {
-            // Get monthly points
-            const monthlyPoints = user.monthlyChallenges.get(monthKey)?.progress || 0;
+            // Get monthly data with full details
+            const monthlyData = user.monthlyChallenges.get(monthKey) || {};
+            const monthlyPoints = monthlyData.progress || 0;
             
-            // Get shadow points if revealed
+            // Get shadow data with full details if revealed
             let shadowPoints = 0;
+            let shadowAchievements = 0;
             if (currentChallenge.shadow_challange_revealed) {
-                shadowPoints = user.shadowChallenges.get(monthKey)?.progress || 0;
+                const shadowData = user.shadowChallenges.get(monthKey) || {};
+                shadowPoints = shadowData.progress || 0;
+                shadowAchievements = shadowData.achievements || 0;
             }
             
             const totalPoints = monthlyPoints + shadowPoints;
             
-            // Calculate percentage completion
-            const totalAchievements = currentChallenge.monthly_challange_game_total || 0;
-            const percentage = totalAchievements > 0 
-                ? Math.round((totalPoints / 3) * 100) // Rough percentage based on points (0-3)
-                : 0;
+            // Use actual achievement counts or fallback to estimates
+            const achievedMonthly = monthlyData.achievements !== undefined ? 
+                monthlyData.achievements : 0;
+                
+            // Calculate total achievements
+            const achievedTotal = achievedMonthly + shadowAchievements;
+            
+            // Use stored percentage if available
+            const percentage = monthlyData.percentage !== undefined ?
+                monthlyData.percentage :
+                (totalPoints > 0 ? Math.round((totalPoints / 3) * 100) : 0);
             
             return {
                 username: user.raUsername,
@@ -252,8 +261,10 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
                 shadowPoints,
                 totalPoints,
                 percentage,
-                achieved: Math.floor(totalPoints * totalAchievements / 3), // Estimate achievements based on points
-                total: totalAchievements
+                achieved: achievedTotal,
+                total: currentChallenge.monthly_challange_game_total,
+                gameTitle: monthlyData.gameTitle || "Unknown Game",
+                gameIconUrl: monthlyData.gameIconUrl
             };
         });
         
@@ -275,7 +286,7 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
         // Calculate time remaining
         const timeRemaining = formatTimeRemaining(challengeEndDate, now);
         
-        // Prepare response
+        // Prepare response with enhanced game information
         const data = {
             leaderboard: filteredLeaderboard,
             challenge: {
@@ -287,7 +298,8 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
                 endDate: endDateFormatted,
                 timeRemaining: timeRemaining,
                 shadowGame: currentChallenge.shadow_challange_revealed ? currentChallenge.shadow_challange_gameid : null,
-                shadowRevealed: currentChallenge.shadow_challange_revealed
+                shadowRevealed: currentChallenge.shadow_challange_revealed,
+                consoleName: gameInfo?.consoleName || "Unknown Console"
             },
             lastUpdated: new Date().toISOString()
         };
