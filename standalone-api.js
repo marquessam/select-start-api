@@ -334,33 +334,67 @@ app.get('/api/leaderboard/yearly', apiKeyAuth, async (req, res) => {
             return res.json(cache.yearly.data);
         }
         
-        const currentYear = new Date().getFullYear();
+        const currentYear = req.query.year ? parseInt(req.query.year) : new Date().getFullYear();
         
         // Get all users
         const users = await User.find({});
         
-        // Build leaderboard
+        // Get all challenges for the year
+        const yearStart = new Date(currentYear, 0, 1);
+        const yearEnd = new Date(currentYear + 1, 0, 1);
+        
+        const challenges = await Challenge.find({
+            date: {
+                $gte: yearStart,
+                $lt: yearEnd
+            }
+        }).sort({ date: 1 });
+        
+        // Create a map of month keys for faster lookup
+        const challengeMap = new Map();
+        for (const challenge of challenges) {
+            const monthKey = User.formatDateKey(challenge.date);
+            challengeMap.set(monthKey, challenge);
+        }
+        
+        // Build enhanced leaderboard with detailed stats
         const leaderboard = users.map(user => {
-            // Calculate yearly points from monthly challenges
+            // Track detailed stats
             let yearlyPoints = 0;
+            let masteryCount = 0;
+            let beatenCount = 0;
+            let participationCount = 0;
+            let shadowBeatenCount = 0;
+            let shadowParticipationCount = 0;
             
-            // Go through monthly challenges
+            // Process monthly challenges for this year
             for (const [key, value] of user.monthlyChallenges.entries()) {
-                // Only count challenges from current year
+                // Only count challenges from the selected year
                 if (key.startsWith(currentYear.toString())) {
-                    yearlyPoints += value.progress || 0;
+                    const progress = value.progress || 0;
+                    yearlyPoints += progress;
+                    
+                    // Track achievement types
+                    if (progress === 3) masteryCount++;
+                    else if (progress === 2) beatenCount++;
+                    else if (progress === 1) participationCount++;
                 }
             }
             
-            // Add shadow challenges
+            // Process shadow challenges for this year
             for (const [key, value] of user.shadowChallenges.entries()) {
-                // Only count challenges from current year
+                // Only count challenges from the selected year
                 if (key.startsWith(currentYear.toString())) {
-                    yearlyPoints += value.progress || 0;
+                    const progress = value.progress || 0;
+                    yearlyPoints += progress;
+                    
+                    // Track shadow achievement types (no mastery for shadow)
+                    if (progress === 2) shadowBeatenCount++;
+                    else if (progress === 1) shadowParticipationCount++;
                 }
             }
             
-            // Add community awards from current year
+            // Add community awards from the current year
             const communityPoints = user.getCommunityPointsForYear(currentYear);
             yearlyPoints += communityPoints;
             
@@ -369,17 +403,51 @@ app.get('/api/leaderboard/yearly', apiKeyAuth, async (req, res) => {
                 discordId: user.discordId,
                 yearlyPoints,
                 communityPoints,
-                challengePoints: yearlyPoints - communityPoints
+                challengePoints: yearlyPoints - communityPoints,
+                stats: {
+                    mastery: masteryCount,
+                    beaten: beatenCount,
+                    participation: participationCount,
+                    shadowBeaten: shadowBeatenCount,
+                    shadowParticipation: shadowParticipationCount
+                }
             };
         });
         
         // Sort by yearly points
         leaderboard.sort((a, b) => b.yearlyPoints - a.yearlyPoints);
         
-        // Prepare response
+        // Filter out users with 0 points
+        const filteredLeaderboard = leaderboard.filter(entry => entry.yearlyPoints > 0);
+        
+        // Add ranking information
+        let lastPoints = -1;
+        let lastRank = 0;
+        
+        const rankedLeaderboard = filteredLeaderboard.map((entry, index) => {
+            // If points are the same as previous entry, use the same rank
+            if (entry.yearlyPoints === lastPoints) {
+                entry.rank = lastRank;
+            } else {
+                entry.rank = index + 1;
+                lastRank = index + 1;
+                lastPoints = entry.yearlyPoints;
+            }
+            return entry;
+        });
+        
+        // Prepare response with enhanced data
         const data = {
-            leaderboard,
+            leaderboard: rankedLeaderboard,
             year: currentYear,
+            challengeCount: challenges.length,
+            pointSystem: {
+                mastery: 7, // 3 for monthly + 3 for beaten + 1 for participation
+                beaten: 4,  // 3 for beaten + 1 for participation
+                participation: 1,
+                shadowBeaten: 4, // Same as regular beaten
+                shadowParticipation: 1
+            },
             lastUpdated: new Date().toISOString()
         };
         
