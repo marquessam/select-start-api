@@ -64,19 +64,6 @@ userSchema.statics.formatDateKey = function(date) {
     return date.toISOString().split('T')[0];
 };
 
-// Method to get user's community awards for a specific year
-userSchema.methods.getCommunityAwardsForYear = function(year) {
-    return this.communityAwards.filter(award => 
-        award.awardedAt.getFullYear() === year
-    );
-};
-
-// Method to get total community points for a specific year
-userSchema.methods.getCommunityPointsForYear = function(year) {
-    return this.getCommunityAwardsForYear(year)
-        .reduce((total, award) => total + award.points, 0);
-};
-
 const challengeSchema = new mongoose.Schema({
     date: Date,
     monthly_challange_gameid: String,
@@ -181,25 +168,19 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// Monthly leaderboard endpoint in standalone-api.js
+// COMPLETELY REVISED Monthly leaderboard endpoint
 app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
     try {
-        // Force refresh if requested
-        const forceRefresh = req.query.refresh === 'true';
-        
-        // Check if we have fresh cache and don't need to refresh
-        if (!forceRefresh && cache.monthly.data && cache.monthly.lastUpdated && 
-            (new Date() - cache.monthly.lastUpdated) < (15 * 60 * 1000)) { // 15 minutes
-            return res.json(cache.monthly.data);
-        }
-        
-        console.log('Refreshing monthly leaderboard data from database...');
+        console.log('Monthly leaderboard request received');
         
         // Get current month's challenge
         const now = new Date();
         const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
         const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
         
+        console.log(`Finding challenge between ${currentMonthStart.toISOString()} and ${nextMonthStart.toISOString()}`);
+        
+        // Get current challenge without using lean() for safety
         const currentChallenge = await Challenge.findOne({
             date: {
                 $gte: currentMonthStart,
@@ -208,85 +189,82 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
         });
         
         if (!currentChallenge) {
+            console.log('No challenge found for current month');
             return res.status(404).json({
                 error: 'No current challenge found'
             });
         }
 
-        // Get all users
-        const users = await User.find({});
+        console.log(`Found challenge for game ID: ${currentChallenge.monthly_challange_gameid}`);
         
         // Get the month key
         const monthKey = User.formatDateKey(currentChallenge.date);
+        console.log(`Using month key: ${monthKey}`);
         
-        console.log(`Found challenge for ${monthKey} with ${users.length} users`);
+        // Get all users without using lean() for safety
+        const users = await User.find({});
+        console.log(`Found ${users.length} users`);
         
         // Build leaderboard with data directly from the database
         const leaderboard = [];
         
         for (const user of users) {
-            // Get monthly data with full details
-            const monthlyData = user.monthlyChallenges.get(monthKey) || {};
-            const monthlyPoints = monthlyData.progress || 0;
-            
-            // Get shadow data with full details if revealed
-            let shadowPoints = 0;
-            let shadowAchievements = 0;
-            if (currentChallenge.shadow_challange_revealed) {
-                const shadowData = user.shadowChallenges.get(monthKey) || {};
-                shadowPoints = shadowData.progress || 0;
-                shadowAchievements = shadowData.achievements || 0;
+            try {
+                // Get monthly data with full details
+                let monthlyPoints = 0;
+                let monthlyData = {};
+                
+                if (user.monthlyChallenges && user.monthlyChallenges instanceof Map && user.monthlyChallenges.has(monthKey)) {
+                    monthlyData = user.monthlyChallenges.get(monthKey) || {};
+                    monthlyPoints = monthlyData.progress || 0;
+                }
+                
+                // Get shadow data with full details if revealed
+                let shadowPoints = 0;
+                let shadowAchievements = 0;
+                
+                if (currentChallenge.shadow_challange_revealed && 
+                    user.shadowChallenges && 
+                    user.shadowChallenges instanceof Map && 
+                    user.shadowChallenges.has(monthKey)) {
+                    const shadowData = user.shadowChallenges.get(monthKey) || {};
+                    shadowPoints = shadowData.progress || 0;
+                    shadowAchievements = shadowData.achievements || 0;
+                }
+                
+                const totalPoints = monthlyPoints + shadowPoints;
+                
+                // Skip users with no points - no need to include them
+                if (totalPoints === 0) {
+                    continue;
+                }
+                
+                // Add this user to the leaderboard with full details
+                leaderboard.push({
+                    username: user.raUsername,
+                    discordId: user.discordId,
+                    monthlyPoints,
+                    shadowPoints,
+                    totalPoints,
+                    // Use the stored percentage directly from the bot
+                    percentage: monthlyData.percentage || 0,
+                    // Use the actual achievement counts from the bot
+                    achieved: monthlyData.achievements || 0,
+                    achievements: monthlyData.achievements || 0, // Duplicate for different frontend usages
+                    totalAchievements: monthlyData.totalAchievements || currentChallenge.monthly_challange_game_total,
+                    gameTitle: monthlyData.gameTitle || "Unknown Game",
+                    gameIconUrl: monthlyData.gameIconUrl || null
+                });
+            } catch (userError) {
+                console.error(`Error processing user ${user.raUsername}:`, userError);
+                // Continue with next user
             }
-            
-            const totalPoints = monthlyPoints + shadowPoints;
-            
-            // Skip users with no points - no need to include them
-            if (totalPoints === 0) {
-                continue;
-            }
-            
-            // Use the values EXACTLY as stored by the bot
-            leaderboard.push({
-                username: user.raUsername,
-                discordId: user.discordId,
-                monthlyPoints,
-                shadowPoints,
-                totalPoints,
-                // Use the stored percentage directly from the bot
-                percentage: monthlyData.percentage || 0,
-                // Use the actual achievement counts from the bot
-                achieved: monthlyData.achievements || 0,
-                achievements: monthlyData.achievements || 0, // Duplicate for different frontend usages
-                totalAchievements: monthlyData.totalAchievements || currentChallenge.monthly_challange_game_total,
-                gameTitle: monthlyData.gameTitle || "Unknown Game",
-                gameIconUrl: monthlyData.gameIconUrl || null
-            });
         }
         
-        // Sort by total points - Same sorting used by the bot
-        leaderboard.sort((a, b) => {
-            if (b.totalPoints !== a.totalPoints) {
-                return b.totalPoints - a.totalPoints;
-            }
-            return b.achieved - a.achieved;
-        });
+        console.log(`Processed ${leaderboard.length} users with points`);
         
-        // Handle ties properly
-        let currentRank = 1;
-        let currentPoints = leaderboard.length > 0 ? leaderboard[0].totalPoints : 0;
-        let currentAchieved = leaderboard.length > 0 ? leaderboard[0].achieved : 0;
-        let usersProcessed = 0;
-        
-        for (let i = 0; i < leaderboard.length; i++) {
-            if (leaderboard[i].totalPoints < currentPoints || 
-               (leaderboard[i].totalPoints === currentPoints && leaderboard[i].achieved < currentAchieved)) {
-                currentRank = usersProcessed + 1;
-                currentPoints = leaderboard[i].totalPoints;
-                currentAchieved = leaderboard[i].achieved;
-            }
-            leaderboard[i].rank = currentRank;
-            usersProcessed++;
-        }
+        // Sort by total points
+        leaderboard.sort((a, b) => b.totalPoints - a.totalPoints);
         
         // Calculate challenge end date and time remaining
         const challengeEndDate = new Date(nextMonthStart);
@@ -318,17 +296,23 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
             lastUpdated: new Date().toISOString()
         };
         
-        console.log(`Processed ${leaderboard.length} users for the leaderboard`);
+        console.log(`Sending response with ${leaderboard.length} users`);
         
         // Update cache
         cache.monthly.data = data;
         cache.monthly.lastUpdated = new Date();
         
-        // Save to disk
-        fs.writeFileSync(
-            join(CACHE_DIR, 'monthly-leaderboard.json'),
-            JSON.stringify(data, null, 2)
-        );
+        try {
+            // Save to disk
+            fs.writeFileSync(
+                join(CACHE_DIR, 'monthly-leaderboard.json'),
+                JSON.stringify(data, null, 2)
+            );
+            console.log('Monthly leaderboard saved to disk cache');
+        } catch (cacheError) {
+            console.error('Error saving monthly cache to disk:', cacheError);
+            // Continue sending response even if cache save fails
+        }
         
         res.json(data);
         
@@ -341,19 +325,17 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
     }
 });
 
-// Yearly leaderboard
+// COMPLETELY REVISED Yearly leaderboard endpoint
 app.get('/api/leaderboard/yearly', apiKeyAuth, async (req, res) => {
     try {
-        // Check if we have fresh cache
-        if (cache.yearly.data && cache.yearly.lastUpdated && 
-            (new Date() - cache.yearly.lastUpdated) < (30 * 60 * 1000)) { // 30 minutes
-            return res.json(cache.yearly.data);
-        }
+        console.log('Yearly leaderboard request received');
         
         const currentYear = req.query.year ? parseInt(req.query.year) : new Date().getFullYear();
+        console.log(`Fetching yearly leaderboard for year: ${currentYear}`);
         
-        // Get all users
+        // Get all users without using lean() for safety
         const users = await User.find({});
+        console.log(`Found ${users.length} users`);
         
         // Get all challenges for the year
         const yearStart = new Date(currentYear, 0, 1);
@@ -366,81 +348,98 @@ app.get('/api/leaderboard/yearly', apiKeyAuth, async (req, res) => {
             }
         }).sort({ date: 1 });
         
-        // Create a map of month keys for faster lookup
-        const challengeMap = new Map();
-        for (const challenge of challenges) {
-            const monthKey = User.formatDateKey(challenge.date);
-            challengeMap.set(monthKey, challenge);
-        }
+        console.log(`Found ${challenges.length} challenges for ${currentYear}`);
         
         // Build enhanced leaderboard with detailed stats
-        const leaderboard = users.map(user => {
-            // Track detailed stats
-            let yearlyPoints = 0;
-            let masteryCount = 0;
-            let beatenCount = 0;
-            let participationCount = 0;
-            let shadowBeatenCount = 0;
-            let shadowParticipationCount = 0;
-            
-            // Process monthly challenges for this year
-            for (const [key, value] of user.monthlyChallenges.entries()) {
-                // Only count challenges from the selected year
-                if (key.startsWith(currentYear.toString())) {
-                    const progress = value.progress || 0;
-                    yearlyPoints += progress;
+        const leaderboard = [];
+        
+        for (const user of users) {
+            try {
+                // Track detailed stats
+                let yearlyPoints = 0;
+                let masteryCount = 0;
+                let beatenCount = 0;
+                let participationCount = 0;
+                let shadowBeatenCount = 0;
+                let shadowParticipationCount = 0;
+                
+                // Process monthly challenges for this year
+                if (user.monthlyChallenges && user.monthlyChallenges instanceof Map) {
+                    // Convert Map to Array of entries for safe iteration
+                    const entries = Array.from(user.monthlyChallenges.entries());
                     
-                    // Track achievement types
-                    if (progress === 3) masteryCount++;
-                    else if (progress === 2) beatenCount++;
-                    else if (progress === 1) participationCount++;
+                    for (const [key, value] of entries) {
+                        // Only count challenges from the selected year
+                        if (key.startsWith(currentYear.toString())) {
+                            const progress = value.progress || 0;
+                            yearlyPoints += progress;
+                            
+                            // Track achievement types
+                            if (progress === 3) masteryCount++;
+                            else if (progress === 2) beatenCount++;
+                            else if (progress === 1) participationCount++;
+                        }
+                    }
                 }
-            }
-            
-            // Process shadow challenges for this year
-            for (const [key, value] of user.shadowChallenges.entries()) {
-                // Only count challenges from the selected year
-                if (key.startsWith(currentYear.toString())) {
-                    const progress = value.progress || 0;
-                    yearlyPoints += progress;
+                
+                // Process shadow challenges for this year
+                if (user.shadowChallenges && user.shadowChallenges instanceof Map) {
+                    // Convert Map to Array of entries for safe iteration
+                    const entries = Array.from(user.shadowChallenges.entries());
                     
-                    // Track shadow achievement types (no mastery for shadow)
-                    if (progress === 2) shadowBeatenCount++;
-                    else if (progress === 1) shadowParticipationCount++;
+                    for (const [key, value] of entries) {
+                        // Only count challenges from the selected year
+                        if (key.startsWith(currentYear.toString())) {
+                            const progress = value.progress || 0;
+                            yearlyPoints += progress;
+                            
+                            // Track shadow achievement types
+                            if (progress === 2) shadowBeatenCount++;
+                            else if (progress === 1) shadowParticipationCount++;
+                        }
+                    }
                 }
+                
+                // Add community awards from the current year
+                if (user.communityAwards && Array.isArray(user.communityAwards)) {
+                    const communityPoints = user.communityAwards
+                        .filter(award => award.awardedAt && new Date(award.awardedAt).getFullYear() === currentYear)
+                        .reduce((total, award) => total + (award.points || 0), 0);
+                    
+                    yearlyPoints += communityPoints;
+                }
+                
+                // Skip users with no points
+                if (yearlyPoints <= 0) continue;
+                
+                leaderboard.push({
+                    username: user.raUsername,
+                    discordId: user.discordId,
+                    yearlyPoints,
+                    stats: {
+                        mastery: masteryCount,
+                        beaten: beatenCount,
+                        participation: participationCount,
+                        shadowBeaten: shadowBeatenCount,
+                        shadowParticipation: shadowParticipationCount
+                    }
+                });
+            } catch (userError) {
+                console.error(`Error processing yearly data for user ${user.raUsername}:`, userError);
+                // Continue with next user
             }
-            
-            // Add community awards from the current year
-            const communityPoints = user.getCommunityPointsForYear(currentYear);
-            yearlyPoints += communityPoints;
-            
-            return {
-                username: user.raUsername,
-                discordId: user.discordId,
-                yearlyPoints,
-                communityPoints,
-                challengePoints: yearlyPoints - communityPoints,
-                stats: {
-                    mastery: masteryCount,
-                    beaten: beatenCount,
-                    participation: participationCount,
-                    shadowBeaten: shadowBeatenCount,
-                    shadowParticipation: shadowParticipationCount
-                }
-            };
-        });
+        }
+        
+        console.log(`Processed ${leaderboard.length} users with yearly points`);
         
         // Sort by yearly points
         leaderboard.sort((a, b) => b.yearlyPoints - a.yearlyPoints);
-        
-        // Filter out users with 0 points
-        const filteredLeaderboard = leaderboard.filter(entry => entry.yearlyPoints > 0);
         
         // Add ranking information
         let lastPoints = -1;
         let lastRank = 0;
         
-        const rankedLeaderboard = filteredLeaderboard.map((entry, index) => {
+        const rankedLeaderboard = leaderboard.map((entry, index) => {
             // If points are the same as previous entry, use the same rank
             if (entry.yearlyPoints === lastPoints) {
                 entry.rank = lastRank;
@@ -471,11 +470,17 @@ app.get('/api/leaderboard/yearly', apiKeyAuth, async (req, res) => {
         cache.yearly.data = data;
         cache.yearly.lastUpdated = new Date();
         
-        // Save to disk
-        fs.writeFileSync(
-            join(CACHE_DIR, 'yearly-leaderboard.json'),
-            JSON.stringify(data, null, 2)
-        );
+        try {
+            // Save to disk
+            fs.writeFileSync(
+                join(CACHE_DIR, 'yearly-leaderboard.json'),
+                JSON.stringify(data, null, 2)
+            );
+            console.log('Yearly leaderboard saved to disk cache');
+        } catch (cacheError) {
+            console.error('Error saving yearly cache to disk:', cacheError);
+            // Continue sending response even if cache save fails
+        }
         
         res.json(data);
         
@@ -488,11 +493,19 @@ app.get('/api/leaderboard/yearly', apiKeyAuth, async (req, res) => {
     }
 });
 
-// Nominations
+// Nominations endpoint - presumably working
 app.get('/api/nominations', apiKeyAuth, async (req, res) => {
     try {
+        // Force refresh if requested
+        const forceRefresh = req.query.refresh === 'true';
+        if (forceRefresh) {
+            cache.nominations.data = null;
+            cache.nominations.lastUpdated = null;
+            console.log('Nominations cache cleared by request parameter');
+        }
+        
         // Check if we have fresh cache
-        if (cache.nominations.data && cache.nominations.lastUpdated && 
+        if (!forceRefresh && cache.nominations.data && cache.nominations.lastUpdated && 
             (new Date() - cache.nominations.lastUpdated) < (10 * 60 * 1000)) { // 10 minutes
             return res.json(cache.nominations.data);
         }
@@ -511,9 +524,10 @@ app.get('/api/nominations', apiKeyAuth, async (req, res) => {
         
         for (const user of users) {
             // Get current nominations
-            const userNominations = user.nominations.filter(nom => {
-                const nomMonth = nom.nominatedAt.getMonth();
-                const nomYear = nom.nominatedAt.getFullYear();
+            const userNominations = (user.nominations || []).filter(nom => {
+                const nomDate = new Date(nom.nominatedAt);
+                const nomMonth = nomDate.getMonth();
+                const nomYear = nomDate.getFullYear();
                 return nomMonth === currentMonth && nomYear === currentYear;
             });
             
