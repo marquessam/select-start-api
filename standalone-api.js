@@ -184,11 +184,16 @@ app.get('/api/health', (req, res) => {
 // Monthly leaderboard endpoint in standalone-api.js
 app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
     try {
-        // Check if we have fresh cache
-        if (cache.monthly.data && cache.monthly.lastUpdated && 
+        // Force refresh if requested
+        const forceRefresh = req.query.refresh === 'true';
+        
+        // Check if we have fresh cache and don't need to refresh
+        if (!forceRefresh && cache.monthly.data && cache.monthly.lastUpdated && 
             (new Date() - cache.monthly.lastUpdated) < (15 * 60 * 1000)) { // 15 minutes
             return res.json(cache.monthly.data);
         }
+        
+        console.log('Refreshing monthly leaderboard data from database...');
         
         // Get current month's challenge
         const now = new Date();
@@ -208,25 +213,18 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
             });
         }
 
-        // Get game info for icon URL and other metadata
-        let gameInfo = null;
-        try {
-            // Import the retroAPI service - adapt this based on your setup
-            const retroAPI = (await import('./services/retroAPI.js')).default;
-            gameInfo = await retroAPI.getGameInfo(currentChallenge.monthly_challange_gameid);
-        } catch (error) {
-            console.error('Error fetching game info:', error);
-            // Continue even if game info fetch fails
-        }
-        
         // Get all users
         const users = await User.find({});
         
         // Get the month key
         const monthKey = User.formatDateKey(currentChallenge.date);
         
-        // Build leaderboard with enhanced data
-        const leaderboard = users.map(user => {
+        console.log(`Found challenge for ${monthKey} with ${users.length} users`);
+        
+        // Build leaderboard with data directly from the database
+        const leaderboard = [];
+        
+        for (const user of users) {
             // Get monthly data with full details
             const monthlyData = user.monthlyChallenges.get(monthKey) || {};
             const monthlyPoints = monthlyData.progress || 0;
@@ -242,37 +240,53 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
             
             const totalPoints = monthlyPoints + shadowPoints;
             
-            // Use actual achievement counts or fallback to estimates
-            const achievedMonthly = monthlyData.achievements !== undefined ? 
-                monthlyData.achievements : 0;
-                
-            // Calculate total achievements
-            const achievedTotal = achievedMonthly + shadowAchievements;
+            // Skip users with no points - no need to include them
+            if (totalPoints === 0) {
+                continue;
+            }
             
-            // Use stored percentage if available
-            const percentage = monthlyData.percentage !== undefined ?
-                monthlyData.percentage :
-                (totalPoints > 0 ? Math.round((totalPoints / 3) * 100) : 0);
-            
-            return {
+            // Use the values EXACTLY as stored by the bot
+            leaderboard.push({
                 username: user.raUsername,
                 discordId: user.discordId,
                 monthlyPoints,
                 shadowPoints,
                 totalPoints,
-                percentage,
-                achieved: achievedTotal,
-                total: currentChallenge.monthly_challange_game_total,
+                // Use the stored percentage directly from the bot
+                percentage: monthlyData.percentage || 0,
+                // Use the actual achievement counts from the bot
+                achieved: monthlyData.achievements || 0,
+                achievements: monthlyData.achievements || 0, // Duplicate for different frontend usages
+                totalAchievements: monthlyData.totalAchievements || currentChallenge.monthly_challange_game_total,
                 gameTitle: monthlyData.gameTitle || "Unknown Game",
-                gameIconUrl: monthlyData.gameIconUrl
-            };
+                gameIconUrl: monthlyData.gameIconUrl || null
+            });
+        }
+        
+        // Sort by total points - Same sorting used by the bot
+        leaderboard.sort((a, b) => {
+            if (b.totalPoints !== a.totalPoints) {
+                return b.totalPoints - a.totalPoints;
+            }
+            return b.achieved - a.achieved;
         });
         
-        // Filter out users with no progress
-        const filteredLeaderboard = leaderboard.filter(entry => entry.totalPoints > 0);
+        // Handle ties properly
+        let currentRank = 1;
+        let currentPoints = leaderboard.length > 0 ? leaderboard[0].totalPoints : 0;
+        let currentAchieved = leaderboard.length > 0 ? leaderboard[0].achieved : 0;
+        let usersProcessed = 0;
         
-        // Sort by total points
-        filteredLeaderboard.sort((a, b) => b.totalPoints - a.totalPoints);
+        for (let i = 0; i < leaderboard.length; i++) {
+            if (leaderboard[i].totalPoints < currentPoints || 
+               (leaderboard[i].totalPoints === currentPoints && leaderboard[i].achieved < currentAchieved)) {
+                currentRank = usersProcessed + 1;
+                currentPoints = leaderboard[i].totalPoints;
+                currentAchieved = leaderboard[i].achieved;
+            }
+            leaderboard[i].rank = currentRank;
+            usersProcessed++;
+        }
         
         // Calculate challenge end date and time remaining
         const challengeEndDate = new Date(nextMonthStart);
@@ -288,21 +302,23 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
         
         // Prepare response with enhanced game information
         const data = {
-            leaderboard: filteredLeaderboard,
+            leaderboard: leaderboard,
             challenge: {
                 monthYear: new Date(currentChallenge.date).toLocaleString('default', { month: 'long', year: 'numeric' }),
                 monthlyGame: currentChallenge.monthly_challange_gameid,
-                gameTitle: gameInfo?.title || 'Unknown Game',
-                gameIconUrl: gameInfo?.imageIcon ? `https://retroachievements.org${gameInfo.imageIcon}` : null,
+                gameTitle: currentChallenge.monthly_game_title || "Ape Escape",
+                gameIconUrl: currentChallenge.monthly_game_icon_url || "https://media.retroachievements.org/Images/061127.png",
                 totalAchievements: currentChallenge.monthly_challange_game_total,
                 endDate: endDateFormatted,
                 timeRemaining: timeRemaining,
                 shadowGame: currentChallenge.shadow_challange_revealed ? currentChallenge.shadow_challange_gameid : null,
                 shadowRevealed: currentChallenge.shadow_challange_revealed,
-                consoleName: gameInfo?.consoleName || "Unknown Console"
+                consoleName: currentChallenge.monthly_game_console || "PlayStation"
             },
             lastUpdated: new Date().toISOString()
         };
+        
+        console.log(`Processed ${leaderboard.length} users for the leaderboard`);
         
         // Update cache
         cache.monthly.data = data;
