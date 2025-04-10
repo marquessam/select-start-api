@@ -181,7 +181,7 @@ app.get('/api/health', (req, res) => {
     });
 });
 
-// UPDATED Monthly leaderboard endpoint
+// UPDATED Monthly leaderboard endpoint with fixed Map access
 app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
     try {
         // Always force refresh on the data
@@ -225,7 +225,8 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
         // Log some sample data to verify what's in the database
         const sampleUsers = users.slice(0, 3);
         for (const user of sampleUsers) {
-            const monthlyData = user.monthlyChallenges.get(monthKey);
+            // When using lean(), we need to access the map differently
+            const monthlyData = user.monthlyChallenges ? user.monthlyChallenges[monthKey] : null;
             console.log(`Sample user ${user.raUsername}: Achievements: ${monthlyData?.achievements}, Percentage: ${monthlyData?.percentage}`);
         }
         
@@ -233,17 +234,17 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
         const leaderboard = [];
         
         for (const user of users) {
-            // Get monthly data with full details
-            const monthlyData = user.monthlyChallenges.get(monthKey) || {};
-            const monthlyPoints = monthlyData.progress || 0;
+            // Get monthly data with full details - use object syntax instead of .get() for lean queries
+            const monthlyData = user.monthlyChallenges ? user.monthlyChallenges[monthKey] : {};
+            const monthlyPoints = monthlyData?.progress || 0;
             
-            // Get shadow data with full details if revealed
+            // Get shadow data with full details if revealed - use object syntax
             let shadowPoints = 0;
             let shadowAchievements = 0;
             if (currentChallenge.shadow_challange_revealed) {
-                const shadowData = user.shadowChallenges.get(monthKey) || {};
-                shadowPoints = shadowData.progress || 0;
-                shadowAchievements = shadowData.achievements || 0;
+                const shadowData = user.shadowChallenges ? user.shadowChallenges[monthKey] : {};
+                shadowPoints = shadowData?.progress || 0;
+                shadowAchievements = shadowData?.achievements || 0;
             }
             
             const totalPoints = monthlyPoints + shadowPoints;
@@ -261,13 +262,13 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
                 shadowPoints,
                 totalPoints,
                 // Use the stored percentage directly from the bot
-                percentage: monthlyData.percentage || 0,
+                percentage: monthlyData?.percentage || 0,
                 // Use the actual achievement counts from the bot
-                achieved: monthlyData.achievements || 0,
-                achievements: monthlyData.achievements || 0, // Duplicate for different frontend usages
-                totalAchievements: monthlyData.totalAchievements || currentChallenge.monthly_challange_game_total,
-                gameTitle: monthlyData.gameTitle || "Unknown Game",
-                gameIconUrl: monthlyData.gameIconUrl || null
+                achieved: monthlyData?.achievements || 0,
+                achievements: monthlyData?.achievements || 0, // Duplicate for different frontend usages
+                totalAchievements: monthlyData?.totalAchievements || currentChallenge.monthly_challange_game_total,
+                gameTitle: monthlyData?.gameTitle || "Unknown Game",
+                gameIconUrl: monthlyData?.gameIconUrl || null
             });
         }
         
@@ -335,7 +336,7 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
     }
 });
 
-// Yearly leaderboard
+// Yearly leaderboard with fixed Map access
 app.get('/api/leaderboard/yearly', apiKeyAuth, async (req, res) => {
     try {
         // Force refresh if requested
@@ -387,31 +388,35 @@ app.get('/api/leaderboard/yearly', apiKeyAuth, async (req, res) => {
             let shadowBeatenCount = 0;
             let shadowParticipationCount = 0;
             
-            // Process monthly challenges for this year
-            for (const [key, value] of Object.entries(user.monthlyChallenges || {})) {
-                // Only count challenges from the selected year
-                if (key.startsWith(currentYear.toString())) {
-                    const progress = value.progress || 0;
-                    yearlyPoints += progress;
-                    
-                    // Track achievement types
-                    if (progress === 3) masteryCount++;
-                    else if (progress === 2) beatenCount++;
-                    else if (progress === 1) participationCount++;
-                }
+            // Process monthly challenges for this year - with lean(), monthlyChallenges is a plain object
+            if (user.monthlyChallenges) {
+                Object.entries(user.monthlyChallenges).forEach(([key, value]) => {
+                    // Only count challenges from the selected year
+                    if (key.startsWith(currentYear.toString())) {
+                        const progress = value.progress || 0;
+                        yearlyPoints += progress;
+                        
+                        // Track achievement types
+                        if (progress === 3) masteryCount++;
+                        else if (progress === 2) beatenCount++;
+                        else if (progress === 1) participationCount++;
+                    }
+                });
             }
             
-            // Process shadow challenges for this year
-            for (const [key, value] of Object.entries(user.shadowChallenges || {})) {
-                // Only count challenges from the selected year
-                if (key.startsWith(currentYear.toString())) {
-                    const progress = value.progress || 0;
-                    yearlyPoints += progress;
-                    
-                    // Track shadow achievement types (no mastery for shadow)
-                    if (progress === 2) shadowBeatenCount++;
-                    else if (progress === 1) shadowParticipationCount++;
-                }
+            // Process shadow challenges for this year - with lean(), shadowChallenges is a plain object 
+            if (user.shadowChallenges) {
+                Object.entries(user.shadowChallenges).forEach(([key, value]) => {
+                    // Only count challenges from the selected year
+                    if (key.startsWith(currentYear.toString())) {
+                        const progress = value.progress || 0;
+                        yearlyPoints += progress;
+                        
+                        // Track shadow achievement types (no mastery for shadow)
+                        if (progress === 2) shadowBeatenCount++;
+                        else if (progress === 1) shadowParticipationCount++;
+                    }
+                });
             }
             
             // Add community awards from the current year
@@ -496,7 +501,7 @@ app.get('/api/leaderboard/yearly', apiKeyAuth, async (req, res) => {
     }
 });
 
-// Nominations
+// Nominations with fixed Map access
 app.get('/api/nominations', apiKeyAuth, async (req, res) => {
     try {
         // Force refresh if requested
