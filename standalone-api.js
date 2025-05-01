@@ -284,14 +284,14 @@ app.get('/api/leaderboard/monthly', apiKeyAuth, async (req, res) => {
             challenge: {
                 monthYear: new Date(currentChallenge.date).toLocaleString('default', { month: 'long', year: 'numeric' }),
                 monthlyGame: currentChallenge.monthly_challange_gameid,
-                gameTitle: currentChallenge.monthly_game_title || "Ape Escape",
-                gameIconUrl: currentChallenge.monthly_game_icon_url || "https://media.retroachievements.org/Images/061127.png",
+                gameTitle: currentChallenge.monthly_game_title || "Pokémon Snap",
+                gameIconUrl: currentChallenge.monthly_game_icon_url || "https://media.retroachievements.org/Images/064539.png",
                 totalAchievements: currentChallenge.monthly_challange_game_total,
                 endDate: endDateFormatted,
                 timeRemaining: timeRemaining,
                 shadowGame: currentChallenge.shadow_challange_revealed ? currentChallenge.shadow_challange_gameid : null,
                 shadowRevealed: currentChallenge.shadow_challange_revealed,
-                consoleName: currentChallenge.monthly_game_console || "PlayStation"
+                consoleName: currentChallenge.monthly_game_console || "N64"
             },
             lastUpdated: new Date().toISOString()
         };
